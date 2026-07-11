@@ -48,7 +48,6 @@
 | `python agent.py` | `in.md` のペイロードを実行して `out.txt` を作る |
 | `python agent.py --clip` | `in.md` の代わりにクリップボードから読む |
 | `python agent.py resume` | 新チャット用の引き継ぎパケット `resume.txt` を作る |
-| `python agent.py qa deck.pptx` | スライドを画像化して目視QA用プロンプトを出す |
 
 ## 覚えておく合図
 
@@ -61,4 +60,4 @@
   手で編集せず、RUNBOOK のトラブル対応にある戻し文句を送る。
   再発するならチャットの世代交代（resume）
 
-詳細・トラブル対応・会社への説明材料はすべて [RUNBOOK.md](RUNBOOK.md) へ。
+詳細・トラブル対応は [RUNBOOK.md](RUNBOOK.md) へ。
