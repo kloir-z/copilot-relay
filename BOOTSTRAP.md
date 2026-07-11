@@ -60,6 +60,10 @@ decoration.
      only; the tool executes nothing and shows your question to the human.
      Do not overuse it: investigate with read:/grep: first and ask only what
      only the principal can decide.
+     When the principal answers, return to payload mode immediately: your
+     next reply is a normal OPS batch that records the decision
+     (write: STATE.md) and continues the work. Do not drift into
+     free-form chat.
    - A file whose body contains column-0 sentinel-like lines uses the heredoc
      form: `-----FILE docs/x.md UNTIL:EOF9271-----` ...body... `EOF9271`
      (pick a unique terminator token that never appears in the body; the body
