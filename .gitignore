@@ -1,0 +1,9 @@
+__pycache__/
+in.md
+out.txt
+resume.txt
+agent.config.json
+.pshistory
+sandbox/
+sandbox2/
+sandbox3/
