@@ -43,7 +43,9 @@ Cycle
      (or clipboard, with --clip).
   2. Run:   python agent.py
   3. It runs the OPS section against your real repo.
-  4. It writes  out.txt : STATE.md + git status + results, re-grounded.
+  4. It writes  out.txt : STATE.md + git status + recent commits + results.
+     Every out.txt is self-sufficient: pasted into a NEW chat it re-grounds
+     the task, so clearing the chat at any point is safe.
      - Small  -> paste it into Copilot.
      - Large  -> ATTACH out.txt as a file (Copilot accepts TXT uploads;
                  paste limits vary by tenant, attachment is the safe path).
@@ -75,6 +77,7 @@ CONFIG = {
     "timeout": 180,
     "max_chars": 6000,       # cap per-action output
     "paste_limit": 7000,     # above this, advise attaching out.txt instead
+    "state_max_lines": 60,   # STATE.md is re-pasted every turn; nag above this
     "auto_commit": False,    # git checkpoint after each mutating batch
     "infile": "in.md",
     "outfile": "out.txt",
@@ -124,6 +127,9 @@ nothing is executed -- when told CONTINUE, resend the cut section from its
 own sentinel line onward, smaller if needed.
 Keep STATE.md current with write: STATE.md whenever a decision or task
 status changes -- new chats resume from STATE.md plus git facts only.
+STATE.md stays SMALL with fixed sections 目的/決定事項/完了/次の一手/残タスク;
+「次の一手」 always holds the immediate next step, concrete enough for a
+brand-new chat, because this chat may be cleared at any moment.
 Japanese summary ONLY after verify (tests) passes for a unit of work.
 Below is the current ground truth. Continue the task from here.
 """
@@ -302,6 +308,31 @@ def do_read(arg: str, repo: str) -> str:
     return f"[{path}, {len(lines)} lines]\n" + "\n".join(lines)
 
 
+def state_notes(cfg) -> list:
+    """Driver-side STATE.md health checks. The file is pasted back to the
+    model every turn (per-turn tax -> size cap), and 「次の一手」 is what
+    lets a cleared chat resume mid-unit -- so its absence is a defect the
+    driver nags about, not a style choice left to the model."""
+    p = Path(cfg["repo"]) / "STATE.md"
+    if not p.exists():
+        return ["[STATE.md does not exist -- create it via write: STATE.md "
+                "(sections: 目的/決定事項/完了/次の一手/残タスク). Chats may be "
+                "cleared at any moment and resume from STATE.md + git facts alone]"]
+    text = p.read_text(encoding="utf-8-sig", errors="replace")
+    notes = []
+    if "次の一手" not in text:
+        notes.append("[STATE.md has no 「次の一手」 section -- add one via "
+                     "write: STATE.md: the immediate next step, concrete enough "
+                     "that a brand-new chat could execute it directly]")
+    n = len(text.splitlines())
+    limit = cfg.get("state_max_lines", 60)
+    if n > limit:
+        notes.append(f"[STATE.md is {n} lines (soft limit {limit}) -- it is "
+                     "re-pasted every turn; trim to current facts, one line per "
+                     "decision (history already lives in git log)]")
+    return notes
+
+
 def run_batch(lines, files, diff, cfg):
     repo, out, mutated = cfg["repo"], [], False
     written, saw_apply, stray, applied = set(), False, [], []
@@ -370,6 +401,7 @@ def run_batch(lines, files, diff, cfg):
     if mutated and "STATE.md" not in written:
         notes.append("[reminder] code changed but STATE.md was not updated -- if a "
                      "decision or task status changed, write: STATE.md in a coming batch")
+    notes.extend(state_notes(cfg))  # checks post-batch content: writes ran above
     if notes:
         out.append("### relay notes\n" + "\n".join(notes))
     if cfg["verify"]:
@@ -409,6 +441,9 @@ def ground(cfg) -> str:
         parts.append("## STATE.md\n" + state.read_text(encoding="utf-8-sig", errors="replace"))
     parts.append("## git status\n" + sh("git status --short --branch", repo, 30))
     parts.append("## git diff --stat\n" + sh("git diff --stat", repo, 30))
+    # trajectory, not just state: with auto_commit the subjects are ops
+    # summaries, so any single out.txt can seed a brand-new chat
+    parts.append("## recent commits\n" + sh("git log --oneline -5", repo, 30))
     return "\n\n".join(parts)
 
 
@@ -430,18 +465,18 @@ def cmd_resume(cfg):
     driver-collected facts (files, activity log, verify status), with a
     staleness warning when STATE.md lags behind the code."""
     repo = cfg["repo"]
-    parts = [MINI_PROTOCOL, ground(cfg)]
+    parts = [MINI_PROTOCOL, ground(cfg)]  # ground already carries recent commits
     parts.append("## files (git ls-files)\n" + sh("git ls-files", repo, 30))
-    parts.append("## recent commits\n" + sh("git log --oneline -10", repo, 30))
     if cfg["verify"]:
         vres = sh(cfg["verify"], repo, cfg["timeout"])
         status = "GREEN" if vres.startswith("[exit 0]") else "RED"
         parts.append(f"## verify at handoff: {status}\n" + clip(vres, 1500))
+    parts.extend(state_notes(cfg))
     touched = sh("git log -5 --format= --name-only", repo, 30)
     if "STATE.md" not in touched:
         parts.append("[warning] STATE.md was NOT updated in the last 5 commits and is "
                      "probably STALE. FIRST batch: read the key files, reconcile "
-                     "STATE.md (決定事項/残タスク) with reality via write: STATE.md, "
+                     "STATE.md (次の一手/残タスク) with reality via write: STATE.md, "
                      "then continue the task.")
     packet = ("\n\n".join(parts)
               + "\n\nStart with a <scratch> plan and one small OPS batch.")

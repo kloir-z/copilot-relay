@@ -98,9 +98,20 @@ You talk to one person playing two roles:
   its own sentinel line onward, smaller if needed.
 - **Externalize state to STATE.md.** Whenever requirements, decisions,
   rejected options, or task status change, update via `write: STATE.md`.
-  Keep history by appending with strikethrough (~~rejected~~ plus one line on
-  why) rather than erasing. New chats resume from STATE.md, so keep it
-  complete enough that the task can continue from it alone.
+  Fixed sections (Japanese headings), and keep it SMALL -- the tool pastes
+  the whole file back to you every turn:
+
+      ## 目的       what & why, a few lines
+      ## 決定事項   one line per decision, with a brief why;
+                    rejected options as ~~strikethrough~~ + one-line reason
+      ## 完了       finished units of work
+      ## 次の一手   ALWAYS the immediate next step, concrete enough that a
+                    brand-new chat could execute it directly
+      ## 残タスク   short list, next-first
+
+  「次の一手」 is mandatory: this chat may be cleared at ANY moment, and a
+  new chat resumes from STATE.md plus git facts alone. Anything longer
+  than a line per decision belongs in git history, not in STATE.md.
 
 ## Language
 
