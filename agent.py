@@ -4,11 +4,15 @@ agent.py (v3) -- manual "coding agent" driver for M365 Copilot relay.
 
 You are the loop. Copilot is the brain. This script is the hands.
 
-v3: fence-free protocol. M365 Copilot's message copy button returns
-RENDERED text -- code-fence lines (three backticks) do NOT survive the
-round trip. So the protocol keys on sentinel LINES, which do survive.
-Sentinels are only recognized at column 0 (no indentation), so indented
-examples inside documents never collide with them.
+v3: sentinel-line protocol. M365 Copilot's copy button returns RENDERED
+text, and the code-fence lines (three backticks) may not survive the round
+trip -- so the protocol keys on sentinel LINES, recognized only at column 0
+(indented examples inside documents never collide with them). The payload
+MUST still be emitted inside one code fence: a fenced block is what preserves
+the LINE BREAKS. Outside a fence, markdown folds newlines to spaces and the
+whole payload collapses onto one line (no END -> nothing runs). As a safety
+net the parser rebuilds a newline-collapsed OPS batch (see _recover_newlines),
+but file bodies cannot be recovered that way, so fencing is not optional.
 
 Payload format Copilot must emit (taught via BOOTSTRAP.md / Agent Builder):
 
@@ -102,12 +106,29 @@ SENTINEL = re.compile(
     re.IGNORECASE,
 )
 
+# Same shapes as SENTINEL but UNANCHORED and requiring trailing dashes, used only
+# by the newline-recovery path (_recover_newlines). When a whole payload arrives
+# with its newlines folded to spaces, sentinels are no longer at column 0, so we
+# must find them mid-line to rebuild the structure. Trailing dashes are required
+# here (markdown collapse removes newlines, not dashes) so prose words like "END"
+# never false-match. Never used for normal parsing -- there, column-0 anchoring is
+# what keeps indented in-document examples from colliding with real sentinels.
+INLINE_SENTINEL = re.compile(
+    r"-{3,}\s*(?:OPS|DIFF|ASK|END|FILE\s+\S+?(?:\s+UNTIL:\S+?)?)\s*-{3,}",
+    re.IGNORECASE,
+)
+
 MINI_PROTOCOL = """\
 You are a coding agent operating through a human relay (no direct shell).
 Reply format, every turn:
 1) <scratch> English planning/self-questioning. Predict expected output. </scratch>
-2) Exactly ONE machine payload, structured by column-0 sentinel lines
-   (you may wrap it in one code fence for display; fences carry no meaning):
+2) Exactly ONE machine payload, structured by column-0 sentinel lines.
+   ALWAYS wrap the whole payload in one code fence (triple backticks): the fence
+   is what preserves your line breaks through the copy. Outside a fence the reply
+   is rendered as prose and markdown folds every newline into a space, so the
+   payload collapses onto one line, the END sentinel is lost, and nothing runs.
+   The tool ignores the fence lines themselves, so meaning still lives only in
+   the sentinel lines:
      -----OPS-----            read:/ls:/grep:/run:/write:/apply:, small batches
      -----FILE path-----      full file body (one section per write: target)
      -----DIFF-----           unified diff for apply:
@@ -192,8 +213,42 @@ def strip_stray_fence(body: list) -> list:
     return b
 
 
+def _recover_newlines(text: str) -> str:
+    """Rebuild a payload whose newlines were folded into spaces.
+
+    Outside a code fence, the chat UI renders the reply as markdown, and markdown
+    collapses every single newline into a space -- so
+    `-----OPS----- read: x -----END-----` can arrive as ONE line and the END
+    sentinel is never seen at column 0. Put each sentinel back on its own line
+    and break jammed OPS verbs (read:/ls:/grep:/run:/write:/apply:) apart so the
+    normal parser can read it. Only called as a fallback when the first parse
+    found no END (see parse_payload); it never touches well-formed input."""
+    t = INLINE_SENTINEL.sub(
+        lambda m: "\n" + re.sub(r"\s+", " ", m.group(0)).strip() + "\n", text
+    )
+    return re.sub(r"[^\S\n]+(?=(?:read|ls|grep|run|write|apply):)", "\n", t)
+
+
 def parse_payload(text: str):
-    """Sentinel-based parser. Returns (ops_lines, files, diff, truncated).
+    """Parse a payload, with a fallback for newline-collapsed input.
+
+    Returns (ops, files, diff, ask, truncated, recovered). Parse as-is first;
+    if no END sentinel was found the reply was either cut off OR had its line
+    breaks folded to spaces (payload pasted outside a code fence). Retry once on
+    a newline-rebuilt copy; if that yields a complete payload use it and set
+    recovered=True, so the caller can refuse file bodies (whose own line breaks
+    are unrecoverable) while still running a safe ops-only batch."""
+    ops, files, diff, ask, truncated = _parse_sections(text)
+    if not truncated:
+        return ops, files, diff, ask, truncated, False
+    r = _parse_sections(_recover_newlines(text))
+    if not r[4]:  # recovery produced a complete (END-terminated) payload
+        return (*r, True)
+    return ops, files, diff, ask, truncated, False
+
+
+def _parse_sections(text: str):
+    """Sentinel-based parser core. Returns (ops, files, diff, ask, truncated).
     Fence lines are cosmetic; only column-0 sentinel lines carry meaning.
     truncated=True means no END sentinel was seen: the open (cut) section
     is dropped and the caller must not execute anything."""
@@ -527,11 +582,20 @@ def main():
     if len(sys.argv) > 2 and sys.argv[1] == "qa":
         return cmd_qa(cfg, sys.argv[2])
     text = read_input(cfg)
-    lines, files, diff, ask, truncated = parse_payload(text)
+    lines, files, diff, ask, truncated, recovered = parse_payload(text)
     if truncated:
-        sys.exit("Payload has no -----END----- sentinel (reply was likely cut off). "
-                 "Nothing was executed. Send CONTINUE to Copilot, then remove the cut "
-                 "section from the end of in.md, append the resent section, and re-run.")
+        sys.exit("Payload has no -----END----- sentinel. Either the reply was cut off, "
+                 "or its line breaks were lost: a payload pasted OUTSIDE a code fence is "
+                 "rendered as prose and markdown folds every newline into a space, so the "
+                 "whole thing collapses onto one line. Nothing was executed. Fix: tell the "
+                 "model to put the WHOLE payload inside ONE code fence (```) -- that is what "
+                 "preserves the newlines -- and resend. If instead it was truncated, send "
+                 "CONTINUE and resend the cut section from its sentinel line onward.")
+    if recovered and (files or diff):
+        sys.exit("Recovered the sentinel structure from a newline-collapsed payload, but a "
+                 "FILE/DIFF body cannot be recovered -- its own line breaks are gone, so "
+                 "writing it would corrupt the file. Nothing was executed. Resend this "
+                 "payload INSIDE one code fence (```) so the newlines survive the copy.")
     if ask:
         # the principal's turn: surface the question, execute nothing
         print("\n########  ASK -- the agent needs YOUR decision  ########\n")
@@ -546,9 +610,21 @@ def main():
         sys.exit("No OPS / FILE / DIFF / ASK sentinel sections found in the input. "
                  "(If the reply was plain prose addressed to you, just answer it "
                  "in the chat.)")
+    if recovered:
+        # ops-only recovery (files/diff already rejected above): run it, but tell
+        # the model to fence from now on so writes aren't lost next time
+        print("[relay] payload arrived with newlines collapsed; rebuilt and ran it. "
+              "Tell the model to wrap the whole payload in one code fence (```).")
     results = (run_batch(lines, files, diff, cfg) if lines
                else "(no ops; payload sections only -- add an OPS section with write:/apply:)")
-    report = (f"{ground(cfg)}\n\n---\n## results\n{results}\n\n"
+    recovery_note = (
+        "## relay recovery\n[Your last payload arrived with its newlines collapsed "
+        "(it was rendered as prose, not inside a code fence, so markdown folded the "
+        "line breaks into spaces). The relay rebuilt the sentinel structure and ran "
+        "it THIS time. From now on wrap the WHOLE payload in ONE code fence (```): "
+        "writes with a FILE body cannot be auto-recovered, since the body's own line "
+        "breaks would be lost.]\n\n" if recovered else "")
+    report = (f"{ground(cfg)}\n\n---\n{recovery_note}## results\n{results}\n\n"
               "(End of results. Continue in English <scratch>, keep the next ops batch small, "
               "and give the Japanese summary only when this unit of work passes verify.)")
     write_out(cfg["outfile"], report, cfg["paste_limit"])

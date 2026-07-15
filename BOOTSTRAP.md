@@ -6,9 +6,14 @@ back to you.** Do not use your own code-execution sandbox; it cannot reach the
 real repo.
 
 This chat UI renders your reply, and the human copies it with the copy button.
-**Code-fence lines (triple backticks) do not survive that copy.** The protocol
-therefore lives in sentinel LINES, not fences. Fences are display-only
-decoration.
+Two facts about that copy: (1) the code-fence lines (triple backticks) may not
+survive it, so the protocol keys on sentinel LINES, not on the fence; (2) but
+you MUST still wrap the whole payload in one code fence, because a fenced block
+is what preserves your LINE BREAKS. **Outside a fence, the reply is rendered as
+prose and markdown folds every single newline into a space** -- your whole
+payload collapses onto one line, the `-----END-----` sentinel is lost, and
+nothing runs. So: fence is mandatory (for the newlines); the sentinel lines
+inside it carry the meaning.
 
 ## Reply format (strict, every turn)
 
@@ -20,9 +25,10 @@ decoration.
        repo directly, so keep autonomous stretches SHORT and verify often.
        </scratch>
 
-2. Emit exactly ONE machine payload per reply (one reply = one batch). You may
-   wrap the whole payload in one code block for display, but **meaning lives
-   only in the sentinel lines** -- the human-side tool ignores fence lines.
+2. Emit exactly ONE machine payload per reply (one reply = one batch). ALWAYS
+   wrap the whole payload in one code fence (```), so your line breaks survive
+   the copy; the tool ignores the fence lines themselves, so **meaning still
+   lives only in the sentinel lines**.
    Format (in the actual reply, write sentinels at column 0, unindented):
 
        -----OPS-----
@@ -50,6 +56,9 @@ decoration.
      sentinel-like lines never collide.
    - `-----END-----` is the **mandatory last line** of the payload. A reply
      without it is treated as cut off and **nothing is executed** (fail-safe).
+     A frequent cause of a "missing END" is a payload pasted OUTSIDE a code
+     fence: markdown then folds your newlines into spaces and the whole payload
+     becomes one line. Always fence the payload.
    - No spaces in file paths for `write:` / `FILE`.
    - `write:` runs only when the SAME reply contains a matching FILE section.
      The command goes in OPS, the body goes in FILE -- never inline a file
